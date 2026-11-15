@@ -35,7 +35,22 @@ docker compose up -d --build
 docker compose exec -T backend python -m scripts.seed_demo
 ```
 
-访问 [前端](http://localhost:18204)、[后端 OpenAPI](http://localhost:19204/docs)。数据库映射 `localhost:17704`。五服务为 frontend、backend、worker、db、redis，均配置健康检查；后端与 worker 等待数据库和 Redis，前端等待后端。worker 每2秒检查队列与数据库待处理任务，处理后写数据库与共享产物卷。单 worker，重启时将中断任务恢复待执行。测试完成可 `docker compose down -v --remove-orphans`（删除本项目数据卷）。
+访问 [前端](http://localhost:18204)、[后端 OpenAPI](http://localhost:19204/docs)。数据库映射 `localhost:17704`。五服务为 frontend、backend、worker、db、redis，均配置健康检查；后端与 worker 等待数据库和 Redis，前端等待后端。worker 周期性检查队列通知与数据库待处理任务，处理后写数据库与共享产物卷。worker 可水平扩多副本并发认领任务（见下节）。测试完成可 `docker compose down -v --remove-orphans`（删除本项目数据卷）。
+
+### 多 worker 并发、认领与崩溃恢复
+
+worker 无状态、可多副本运行，任务事实以 PostgreSQL 为准，Redis 仅作唤醒通知：
+
+```bash
+docker compose up -d --scale worker=2   # 双计算进程并发，各自认领任务
+```
+
+- **认领互斥**：worker 用 `SELECT ... FOR UPDATE SKIP LOCKED` 行锁认领 `queued` 任务，多进程不会拿到同一行；每个任务记录归属 `worker_id`、租约时间、心跳时间与执行轮次 `attempts`。
+- **心跳租约与接手**：计算期间 worker 按 `HEARTBEAT_INTERVAL`（默认 5s）续租；超过 `TASK_STALE_SECONDS`（默认 30s）无心跳的 `running` 任务判定为僵死，由其他 worker 回收为 `queued` 并重新认领，`attempts` 递增、`recovery_note` 记录“原 worker 心跳超时，由谁接手”。重启进程会自动恢复未完成任务，仍按提交时冻结的测量快照重算。
+- **旧结果防护（fencing）**：回写结果带 `worker_id + status` 归属条件，旧进程迟到的结果或失败态会被拒绝，无法覆盖接手者已完成的记录。
+- **两个保存断点可恢复**：结果文件先以同目录临时文件 + `os.replace` 原子落盘，再提交数据库 `completed`。写文件后、或保存记录前中断，恢复流程都能用同一快照幂等重做；记录已完成而文件缺失时，worker 启动用库内结果补盘。只有文件与评估记录都完整，任务才显示完成。
+- **队列短暂不可用不丢任务**：任务先落库再发 Redis 通知；通知发布失败只记日志，worker 的数据库轮询与启动重发（`requeue_pending`）兜底。重复通知由行锁去重，重试不会重复处理或重复发布。
+- 工作台与评议页展示认领进程、执行轮次、最近心跳与恢复原因；导出 JSON、数据库记录与结果文件中的统计量及输入 SHA-256 校验值保持一致。
 
 Docker 默认网络池不足时使用独立可配置子网，默认 `10.253.105.0/24`；若与部署环境重叠，在 `.env` 修改 `NETWORK_SUBNET`。所有服务容器名基于 `COMPOSE_PROJECT_NAME`。
 
@@ -49,6 +64,9 @@ Docker 默认网络池不足时使用独立可配置子网，默认 `10.253.105.
 | JWT_SECRET | 示例本地 JWT 签名密钥，可在 .env 替换 |
 | SEED_DEMO | true，启动时执行幂等 seed；失败记日志而不阻塞服务 |
 | NETWORK_SUBNET | 10.253.105.0/24 |
+| HEARTBEAT_INTERVAL | 5，worker 心跳续租间隔（秒） |
+| TASK_STALE_SECONDS | 30，租约超时阈值（秒），超时任务可被其他 worker 接手 |
+| ARTIFACT_DIR | /app/artifacts，结果 JSON 产物目录 |
 
 ## 技术与本地开发
 

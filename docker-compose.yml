@@ -6,6 +6,9 @@ x-app: &app
     REDIS_URL: redis://redis:6379/0
     JWT_SECRET: ${JWT_SECRET:-seal-local-development-change-before-sharing-2026}
     SEED_DEMO: ${SEED_DEMO:-true}
+    ARTIFACT_DIR: /app/artifacts
+    HEARTBEAT_INTERVAL: ${HEARTBEAT_INTERVAL:-5}
+    TASK_STALE_SECONDS: ${TASK_STALE_SECONDS:-30}
   volumes:
     - reports:/app/artifacts
   depends_on:
@@ -48,7 +51,7 @@ services:
       retries: 40
   worker:
     <<: *app
-    container_name: ${COMPOSE_PROJECT_NAME:-seal-variance}-worker
+    # 不设 container_name，便于水平扩多副本：docker compose up -d --scale worker=2
     command: ["python", "-m", "src.worker"]
     depends_on:
       backend: {condition: service_healthy}

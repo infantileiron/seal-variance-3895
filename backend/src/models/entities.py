@@ -39,6 +39,12 @@ class Assessment(Base):
     approved:Mapped[bool]=mapped_column(Boolean,default=False)
     approved_by:Mapped[str]=mapped_column(String(120),default='')
     created_at:Mapped[str]=mapped_column(String(40))
+    # 并发认领与崩溃恢复：worker 身份、心跳租约、尝试轮次与认领/恢复留痕
+    worker_id:Mapped[str|None]=mapped_column(String(80),nullable=True)
+    leased_at:Mapped[str|None]=mapped_column(String(40),nullable=True)
+    heartbeat_at:Mapped[str|None]=mapped_column(String(40),nullable=True)
+    attempts:Mapped[int]=mapped_column(Integer,default=0)
+    recovery_note:Mapped[str]=mapped_column(Text,default='')
 class Audit(Base):
     __tablename__='audit_logs'
     id:Mapped[int]=mapped_column(primary_key=True)
